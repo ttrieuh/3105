@@ -61,7 +61,7 @@ jobs:
       - name: Pack unsigned .ipa
         run: |
           set -e
-          APP=$(ls build/App.xcarchive/Products/Applications/*.app -d | head -n1)
+          APP=$(ls -d build/App.xcarchive/Products/Applications/*.app | head -n1)
           if [ -z "$APP" ]; then
             echo "No .app found in archive!"
             ls -R build/App.xcarchive/Products || true
