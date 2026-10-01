@@ -1,0 +1,92 @@
+name: Build Unsigned IPA
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build .ipa on macOS runner
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner Xcode versions
+        run: |
+          ls /Applications | grep -i Xcode || true
+          xcodebuild -version
+
+      - name: List project targets / schemes
+        run: |
+          xcodebuild -list -project ThreeOneOSFive.xcodeproj || true
+
+      - name: Resolve scheme (auto-detect)
+        id: scheme
+        run: |
+          # Shared schemes may be missing; xcodebuild still exposes
+          # auto-generated ones via -list -json after a touch.
+          json=$(xcodebuild -list -project ThreeOneOSFive.xcodeproj -json 2>/dev/null || echo '{}')
+          scheme=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); s=d.get('project',{}).get('schemes',[]); print(s[0] if s else '')")
+          if [ -z "$scheme" ]; then
+            # Fallback: assume target name == project name.
+            scheme="ThreeOneOSFive"
+          fi
+          echo "Selected scheme: $scheme"
+          echo "scheme=$scheme" >> "$GITHUB_OUTPUT"
+
+      - name: Archive (no signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ThreeOneOSFive.xcodeproj \
+            -scheme "${{ steps.scheme.outputs.scheme }}" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/App.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_BITCODE=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            archive | tee archive.log
+
+      - name: Pack unsigned .ipa
+        run: |
+          set -e
+          APP=$(ls build/App.xcarchive/Products/Applications/*.app -d | head -n1)
+          if [ -z "$APP" ]; then
+            echo "No .app found in archive!"
+            ls -R build/App.xcarchive/Products || true
+            exit 1
+          fi
+          echo "Packaging $APP"
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          APPNAME=$(basename "$APP" .app)
+          cd build
+          zip -ryq "${APPNAME}-unsigned.ipa" Payload
+          ls -lh "${APPNAME}-unsigned.ipa"
+          echo "APPNAME=${APPNAME}" >> "$GITHUB_ENV"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APPNAME }}-unsigned-ipa
+          path: build/${{ env.APPNAME }}-unsigned.ipa
+          retention-days: 30
+
+      - name: Upload archive log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-log
+          path: archive.log
+          retention-days: 7
